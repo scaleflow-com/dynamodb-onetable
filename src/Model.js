@@ -1071,7 +1071,7 @@ export class Model {
                     ? (params.transaction.timestamp = params.transaction.timestamp || new Date())
                     : new Date()
                 properties[this.updatedField] = timestamp
-                if (params.exists == null) {
+                if (params.exists == null && (this.timestamps === true || this.timestamps == 'create')) {
                     let field = this.block.fields[this.createdField] || this.table
                     let when = field.isoDates ? timestamp.toISOString() : timestamp.getTime()
                     params.set = params.set || {}
