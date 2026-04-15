@@ -1,0 +1,97 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'  # Every Monday at 9am UTC
+  workflow_dispatch:      # Allow manual trigger
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/sensedeep/dynamodb-onetable.git
+          git fetch upstream
+
+      - name: Compare versions
+        id: versions
+        run: |
+          CURRENT=$(node -p "require('./package.json').version")
+          UPSTREAM=$(git show upstream/main:package.json | node -p "process.stdin.resume(); let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>console.log(JSON.parse(d).version))")
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+          echo "upstream=$UPSTREAM" >> $GITHUB_OUTPUT
+          if [ "$CURRENT" != "$UPSTREAM" ]; then
+            echo "update_needed=true" >> $GITHUB_OUTPUT
+          else
+            echo "update_needed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Log version status
+        run: |
+          echo "Current: ${{ steps.versions.outputs.current }}"
+          echo "Upstream: ${{ steps.versions.outputs.upstream }}"
+          echo "Update needed: ${{ steps.versions.outputs.update_needed }}"
+
+      - name: Create sync PR
+        if: steps.versions.outputs.update_needed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          UPSTREAM_VERSION="${{ steps.versions.outputs.upstream }}"
+          BRANCH="sync/upstream-v${UPSTREAM_VERSION}"
+
+          # Skip if branch already exists (PR may already be open)
+          if git ls-remote --heads origin "$BRANCH" | grep -q "$BRANCH"; then
+            echo "Branch $BRANCH already exists — PR likely already open, skipping."
+            exit 0
+          fi
+
+          git checkout -b "$BRANCH"
+
+          # Attempt auto-merge; if conflicts, push as-is for manual resolution
+          if git merge upstream/main --no-edit; then
+            MERGE_NOTE="Upstream changes merged cleanly. Review and merge."
+          else
+            git merge --abort
+            git reset --hard upstream/main
+            MERGE_NOTE="> **Merge conflicts detected.** This branch contains the upstream code directly. Please resolve conflicts manually before merging into \`main\`."
+          fi
+
+          git push origin "$BRANCH"
+
+          # Tag the branch at this point as a clean restore snapshot
+          git tag "v${UPSTREAM_VERSION}"
+          git push origin "v${UPSTREAM_VERSION}"
+
+          gh pr create \
+            --title "sync: upstream v${UPSTREAM_VERSION}" \
+            --body "$(cat <<EOF
+          ## Upstream sync: v${UPSTREAM_VERSION}
+
+          Automated sync from [sensedeep/dynamodb-onetable](https://github.com/sensedeep/dynamodb-onetable).
+
+          | | Version |
+          |---|---|
+          | **Current** | ${{ steps.versions.outputs.current }} |
+          | **Upstream** | ${UPSTREAM_VERSION} |
+
+          ${MERGE_NOTE}
+          EOF
+          )" \
+            --base main \
+            --head "$BRANCH"
