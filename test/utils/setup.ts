@@ -3,7 +3,7 @@
  */
 import {spawn} from 'child_process'
 const waitPort = require('wait-port')
-import DynamoDbLocal from 'dynamo-db-local'
+import * as DynamoDbLocal from 'dynamo-db-local'
 
 const PORT = parseInt(process.env.PORT || '4567')
 const USE_DOCKER = Boolean(process.env.DOCKER)
@@ -14,30 +14,21 @@ module.exports = async () => {
     // Run docker for any truthy DOCKER value
     if (USE_DOCKER) {
         const args = [`run`, `-p`, `${PORT}:8000`, `amazon/dynamodb-local`]
-        console.info('\nUsing docker to run dynamoDB', {
-            args,
-        })
+        console.info('\nUsing docker to run dynamoDB', {args})
 
         // Docker errors will be forwarded to the local terminal with stdio: inherit
-        dynamodb = spawn(`docker`, args, {
-            cwd: __dirname,
-            stdio: 'inherit',
-        })
+        dynamodb = spawn(`docker`, args, {cwd: __dirname, stdio: 'inherit'})
     } else {
-        console.info('Using local Java to run dynamoDB')
-        dynamodb = DynamoDbLocal.spawn({port: PORT, stdio: 'inherit'})
+        dynamodb = DynamoDbLocal.spawn({port: PORT})
     }
-
-    console.info('Spawn DynamoDB', dynamodb.pid)
-
-    await waitPort({
+    let result = await waitPort({
         host: '0.0.0.0',
         port: PORT,
-        timeout: 10000,
+        timeout: 20000,
     })
-
-    console.info('DynamoDB is ready')
-
+    if (!result.open) {
+        throw new Error('Cannot open port: ' + PORT)
+    }
     process.env.DYNAMODB_PID = String(dynamodb.pid)
     process.env.DYNAMODB_PORT = String(PORT)
 

@@ -3,7 +3,7 @@
 
     Supports dynamic definition of types based on the Schema.js
 */
-import {Expression} from './Expression'
+import {Expression} from './Expression.js'
 
 /*
     Possible types for a schema field "type" property
@@ -37,10 +37,12 @@ export type OneIndex = {
 export type OneField = {
     crypt?: boolean
     default?: string | number | boolean | object | Array<any>
-    encode?: readonly (string | RegExp | number)[]
+    drop?: boolean | string | object
+    encode?: readonly (string | RegExp | number)[] | string
     enum?: readonly string[]
     filter?: boolean
-    generate?: string | boolean
+    fixed?: boolean | string
+    generate?: string | boolean | Function
     hidden?: boolean
     items?: OneField
     map?: string
@@ -92,8 +94,12 @@ export type OneSchemaParams = {
     isoDates?: boolean //  Set to true to store dates as Javascript ISO Date strings. Default false.
     nulls?: boolean //  Store nulls in database attributes. Default false.
     timestamps?: boolean | string //  Make "created" and "updated" timestamps. Set to true, 'create' or 'update'. Default true.
+    separator?: string // Separator string uses in value templates
     typeField?: string //  Name of model type attribute. Default "_type".
     updatedField?: string //  Name of "updated" timestamp attribute. Default 'updated'.
+    warn?: boolean // Emit warnings for some conditions. Default false.
+
+    legacyEmpties?: boolean // Remove empty strings
 }
 
 /*
@@ -110,7 +116,7 @@ type EntityFieldFromType<T extends OneField> = T['type'] extends ArrayConstructo
     : T['type'] extends NumberConstructor | 'number'
     ? number
     : T['type'] extends ObjectConstructor | 'object'
-    ? Entity<Exclude<T['schema'], undefined>>
+    ? (T['schema'] extends object ? Entity<Exclude<T['schema'], undefined>> : Record<any, any>)
     : T['type'] extends DateConstructor | 'date'
     ? Date
     : T['type'] extends ArrayBufferConstructor
@@ -123,7 +129,9 @@ type EntityFieldFromType<T extends OneField> = T['type'] extends ArrayConstructo
     ? EntityFieldFromType<Exclude<T['items'], undefined>>[]
     : never
 
-type ArrayItemType<T extends OneField> = T extends {items: OneField} ? EntityFieldFromType<T['items']> : any
+type ArrayItemType<T extends OneField> = T extends {items: OneField}
+    ? EntityField<T['items']>
+    : any
 /*
     Select the required properties from a model
 */
@@ -142,7 +150,9 @@ type OptionalOrNull<T extends OneModel> = {
     -readonly [P in keyof T as T[P]['required'] extends true ? never : P]?: EntityField<T[P]> | null
 }
 type OptionalOrUndefined<T extends OneModel> = {
-    -readonly [P in keyof T as T[P]['required'] extends true ? never : P]?: EntityField<T[P]> | undefined
+    -readonly [P in keyof T as T[P]['required'] extends true ? never : P]?: T[P]['nulls'] extends true
+        ? EntityField<T[P]> | null | undefined 
+        : EntityField<T[P]> | undefined
 }
 
 /*
@@ -192,12 +202,12 @@ type Entity<T extends OneModel> = Flatten<Merge<Required<T>, OptionalOrUndefined
 /*
     Entity Parameters are partial Entities.
  */
-type EntityParameters<Entity> = Partial<Entity>
+export type EntityParameters<Entity> = Partial<Entity>
 
 /*
     Special case for find to allow query operators
 */
-type EntityParametersForFind<T> = Partial<{
+export type EntityParametersForFind<T> = Partial<{
     [K in keyof T]:
         | T[K]
         | Begins<T, K>
@@ -228,7 +238,7 @@ export type AnyEntity = {
     [key: string]: any
 }
 
-type ModelConstructorOptions = {
+export type ModelConstructorOptions = {
     fields?: OneModel
     indexes?: {
         [key: string]: OneIndex
@@ -250,6 +260,7 @@ export type OneParams = {
     execute?: boolean
     exists?: boolean | null
     fields?: string[]
+    fixed?: boolean
     follow?: boolean
     hidden?: boolean
     index?: string
@@ -258,6 +269,8 @@ export type OneParams = {
     many?: boolean
     maxPages?: number
     next?: object
+    //  DEPRECATED
+    noerror?: boolean
     parse?: boolean
     partial?: boolean
     postFormat?: (model: AnyModel, cmd: {}) => {}
@@ -279,6 +292,7 @@ export type OneParams = {
     transaction?: object
     type?: string
     tunnel?: object
+    warn?: Boolean
     where?: string
     profile?: string
 }
@@ -319,7 +333,7 @@ type GetKeys<T> = T extends T ? keyof T : never
 
     type EntityParametersForCreate<M extends OneModel> = Required<M> & Optional<M>
 */
-type EntityParametersForCreate<T extends OneModel> = Omit<
+export type EntityParametersForCreate<T extends OneModel> = Omit<
     Omit<Omit<Omit<Required<T>, GetKeys<Defaulted<T>>>, GetKeys<Generated<T>>>, GetKeys<ValueTemplates<T>>>,
     GetKeys<TimestampValue<T>>
 > &
@@ -329,9 +343,9 @@ type EntityParametersForCreate<T extends OneModel> = Omit<
     Partial<ValueTemplates<T>> &
     Partial<TimestampValue<T>>
 
-type EntityParametersForUpdate<T extends OneModel> = Partial<Required<T> & OptionalOrNull<T>>
+export type EntityParametersForUpdate<T extends OneModel> = Partial<Required<T> & OptionalOrNull<T>>
 
-type TransactionalOneParams = OneParams & {transaction: object}
+export type TransactionalOneParams = OneParams & {transaction: object}
 
 export class Model<T> {
     constructor(table: any, name: string, options?: ModelConstructorOptions)

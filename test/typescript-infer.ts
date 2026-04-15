@@ -45,15 +45,13 @@ describe('Typescript infer', () => {
 
     test('Create', async () => {
         const properties = {
-            // name: 'Michael',
+            name: 'john',
             email: 'user@example.com',
         }
 
         await expect(async () => {
-            // @ts-expect-error check missing properties
             const user = await User.create(properties)
 
-            // @ts-expect-error check missing properties
             const user1 = await User1.create(properties)
         }).rejects.toThrow()
     })

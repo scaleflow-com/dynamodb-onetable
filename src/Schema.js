@@ -180,9 +180,10 @@ export class Schema {
             description: {type: 'string', required: true},
             path: {type: 'string', required: true},
             version: {type: 'string', required: true},
+            status: {type: 'string'},
         })
         if (primary.sort) {
-            fields[primary.sort] = {type: 'string', value: `${MigrationKey}:\${version}`}
+            fields[primary.sort] = {type: 'string', value: `${MigrationKey}:\${version}:\${date}`}
         }
         this.models[MigrationModel] = new Model(this.table, MigrationModel, {fields, indexes})
     }
@@ -264,8 +265,14 @@ export class Schema {
         if (params.nulls == null) {
             params.nulls = false
         }
+        if (params.separator == null) {
+            params.separator = '#'
+        }
         if (params.timestamps == null) {
             params.timestamps = false
+        }
+        if (params.warn == null) {
+            params.warn = false
         }
         return params
     }

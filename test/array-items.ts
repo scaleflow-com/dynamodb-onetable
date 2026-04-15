@@ -1,5 +1,6 @@
-import {Client, Table} from './utils/init'
+import {Client, Entity, Table} from './utils/init'
 import {ArrayItemsSchema} from './schemas'
+import { ColorEnum } from './schemas/arrayItemsSchema'
 
 // jest.setTimeout(7200 * 1000)
 
@@ -14,6 +15,7 @@ const table = new Table({
 const expected = {
     id: '1111-2222',
     arrayWithTypedItems: [{bar: 'Bar', when: new Date()}],
+    arrayWithEnumItems: [ColorEnum.blue, ColorEnum.red, ColorEnum.white],
     arrayWithoutTypedItems: ['a', '2', 3, new Date()],
 }
 
@@ -29,6 +31,14 @@ test('Create Table', async () => {
 
 test('Create', async () => {
     item = await Model.create(expected, {})
+    expect(item).toBeDefined()
+    expect(item.id).toBeDefined()
+    expect(item.arrayWithTypedItems).toBeDefined()
+    expect(item.arrayWithTypedItems.length).toBe(1)
+    expect(item.arrayWithTypedItems[0].bar).toBe('Bar')
+    expect(item.arrayWithEnumItems).toStrictEqual(expected.arrayWithEnumItems)
+    expect(item.arrayWithoutTypedItems.length).toBe(4)
+    expect(item.arrayWithoutTypedItems[0]).toBe('a')
 
     await Model.update({
         id: '1111-2222',
@@ -54,3 +64,11 @@ test('Destroy Table', async () => {
     await table.deleteTable('DeleteTableForever')
     expect(await table.exists()).toBe(false)
 })
+
+test('Array with enum items typing', () => {
+    type ArrayWithEnumItemsType = Entity<typeof ArrayItemsSchema.models.TestModel>['arrayWithEnumItems'];
+    const validA: ColorEnum[]|undefined = {} as ArrayWithEnumItemsType;
+    const validB: ArrayWithEnumItemsType = {} as ColorEnum[]|undefined;
+    // @ts-expect-error
+    const invalid: ArrayWithEnumItemsType = {} as string[]|undefined;
+});

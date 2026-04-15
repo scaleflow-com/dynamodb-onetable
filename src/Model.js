@@ -61,16 +61,12 @@ export class Model {
 
         //  Cache table properties
         this.createdField = table.createdField
-        this.generic = options.generic
         this.nested = false
         this.nulls = table.nulls
         this.tableName = table.name
         this.typeField = options.typeField || table.typeField
         this.generic = options.generic != null ? options.generic : table.generic
-        this.timestamps = options.timestamps
-        if (this.timestamps == null) {
-            this.timestamps = table.timestamps
-        }
+        this.timestamps = options.timestamps != null ? options.timestamps : table.timestamps
         this.updatedField = table.updatedField
         this.block = {fields: {}, deps: []}
 
@@ -129,18 +125,35 @@ export class Model {
                 field.type = 'string'
                 this.table.log.error(`Missing type field for ${field.name}`, {field})
             }
-            //  Propagate parent schema partial overrides
-            if (parent && field.partial === undefined && parent.partial !== undefined) {
-                field.partial = parent.partial
-            }
+
             field.name = name
             fields[name] = field
             field.isoDates = field.isoDates != null ? field.isoDates : table.isoDates || false
+
+            if (field.partial == null) {
+                field.partial = parent && parent.partial != null ? parent.partial : this.table.partial
+            }
 
             if (field.uuid) {
                 throw new OneTableArgError(
                     'The "uuid" schema property is deprecated. Please use "generate": "uuid or ulid" instead'
                 )
+            }
+            if (field.encode) {
+                let schema = this.schema.definition
+                if (typeof field.encode == 'string' && this.table.separator) {
+                    let def = schema.models[this.name][field.encode]
+                    if (def?.value) {
+                        let parts = def.value.match(/\${(.*?)}/g)
+                        let index = parts.indexOf('${' + field.name + '}')
+                        if (index >= 0) {
+                            field.encode = [field.encode, this.table.separator, index]
+                        }
+                    }
+                    if (typeof field.encode == 'string') {
+                        throw new OneTableArgError(`Cannot resolve encoded reference for ${this.name}.${field.name}`)
+                    }
+                }
             }
 
             field.type = this.checkType(field)
@@ -193,6 +206,9 @@ export class Model {
                         this.sort = attribute
                     }
                 }
+            }
+            if (parent && field.partial === undefined && parent.partial !== undefined) {
+                field.partial = parent.partial
             }
             if (field.value) {
                 //  Value template properties are hidden by default
@@ -314,7 +330,7 @@ export class Model {
                 params.expression = expression
                 let items = (t.TransactItems = t.TransactItems || [])
                 items.push({[top]: cmd})
-                return this.transformReadItem(op, properties, properties, params)
+                return this.transformReadItem(op, properties, properties, params, expression)
             } else {
                 throw new OneTableArgError(`Unknown transaction operation ${op}`)
             }
@@ -329,12 +345,12 @@ export class Model {
             if (op == 'get') {
                 let list = (ritems[this.tableName] = ritems[this.tableName] || {Keys: []})
                 list.Keys.push(cmd.Keys)
-                return this.transformReadItem(op, properties, properties, params)
+                return this.transformReadItem(op, properties, properties, params, expression)
             } else {
                 let list = (ritems[this.tableName] = ritems[this.tableName] || [])
                 let bop = BatchOps[op]
                 list.push({[bop]: cmd})
-                return this.transformReadItem(op, properties, properties, params)
+                return this.transformReadItem(op, properties, properties, params, expression)
             }
         }
         /*
@@ -414,7 +430,9 @@ export class Model {
                     if (cursor && params.index != 'primary') {
                         let {hash, sort} = this.indexes.primary
                         prev[hash] = items[0][hash]
-                        prev[sort] = items[0][sort]
+                        if (sort != null) {
+                            prev[sort] = items[0][sort]
+                        }
                     }
                 }
             }
@@ -497,6 +515,7 @@ export class Model {
                 }
                 results.next = items.next
                 results.prev = items.prev
+                results.count = items.count
                 Object.defineProperty(results, 'next', {enumerable: false})
                 Object.defineProperty(results, 'prev', {enumerable: false})
                 return results
@@ -529,7 +548,7 @@ export class Model {
                     //  Special "unique" model for unique fields. Don't return in result.
                     continue
                 }
-                items[index] = model.transformReadItem(op, item, properties, params)
+                items[index] = model.transformReadItem(op, item, properties, params, expression)
             }
         }
         return items
@@ -539,7 +558,6 @@ export class Model {
         Create/Put a new item. Will overwrite existing items if exists: null.
     */
     async create(properties, params = {}) {
-        /* eslint-disable-next-line */
         ;({properties, params} = this.checkArgs(properties, params, {parse: true, high: true, exists: false}))
         let result
         if (this.hasUniqueFields) {
@@ -576,16 +594,35 @@ export class Model {
         }
         params.prepared = properties = this.prepareProperties('put', properties, params)
 
+        let ttlField = fields.find(f => f.ttl)
+
         for (let field of fields) {
             if (properties[field.name] !== undefined) {
                 let scope = ''
                 if (field.scope) {
                     scope = this.runTemplate(null, null, field, properties, params, field.scope) + '#'
+                    if (scope == undefined) {
+                        throw new OneTableError('Missing properties to resolve unique scope', {
+                            properties,
+                            field,
+                            scope: field.scope,
+                            code: 'UniqueError',
+                        })
+                    }
                 }
                 let pk = `_unique#${scope}${this.name}#${field.attribute}#${properties[field.name]}`
                 let sk = '_unique#'
+                let uproperties = {[this.hash]: pk, [this.sort]: sk}
+
+                if (ttlField) {
+                    /*
+                        Add a TTL expiry property to the unique record
+                     */
+                    let value = properties[ttlField.name]
+                    uproperties[ttlField.name] = new Date(new Date(value).getTime() * 1000)
+                }
                 await this.schema.uniqueModel.create(
-                    {[this.hash]: pk, [this.sort]: sk},
+                    uproperties,
                     {transaction, exists: false, return: 'NONE'}
                 )
             }
@@ -617,7 +654,6 @@ export class Model {
     }
 
     async check(properties, params) {
-        /* eslint-disable-next-line */
         ;({properties, params} = this.checkArgs(properties, params, {parse: true, high: true}))
         properties = this.prepareProperties('get', properties, params)
         const expression = new Expression(this, 'check', properties, params)
@@ -625,13 +661,11 @@ export class Model {
     }
 
     async find(properties = {}, params = {}) {
-        /* eslint-disable-next-line */
         ;({properties, params} = this.checkArgs(properties, params, {parse: true, high: true}))
         return await this.queryItems(properties, params)
     }
 
     async get(properties = {}, params = {}) {
-        /* eslint-disable-next-line */
         ;({properties, params} = this.checkArgs(properties, params, {parse: true, high: true}))
         properties = this.prepareProperties('get', properties, params)
         if (params.fallback) {
@@ -658,7 +692,6 @@ export class Model {
     }
 
     async load(properties = {}, params = {}) {
-        /* eslint-disable-next-line */
         ;({properties, params} = this.checkArgs(properties, params))
         properties = this.prepareProperties('get', properties, params)
         let expression = new Expression(this, 'get', properties, params)
@@ -666,13 +699,11 @@ export class Model {
     }
 
     init(properties = {}, params = {}) {
-        /* eslint-disable-next-line */
         ;({properties, params} = this.checkArgs(properties, params, {parse: true, high: true}))
         return this.initItem(properties, params)
     }
 
     async remove(properties, params = {}) {
-        /* eslint-disable-next-line */
         ;({properties, params} = this.checkArgs(properties, params, {parse: true, exists: null, high: true}))
 
         properties = this.prepareProperties('delete', properties, params)
@@ -752,6 +783,15 @@ export class Model {
             let scope = ''
             if (field.scope) {
                 scope = this.runTemplate(null, null, field, properties, params, field.scope) + '#'
+                if (scope == undefined) {
+                    throw new OneTableError('Missing properties to resolve unique scope', {
+                        properties,
+                        field,
+                        params,
+                        scope: field.scope,
+                        code: 'UniqueError',
+                    })
+                }
             }
             // If we had a prior record, remove unique values that existed
             if (prior && prior[field.name]) {
@@ -781,13 +821,11 @@ export class Model {
     }
 
     async scan(properties = {}, params = {}) {
-        /* eslint-disable-next-line */
         ;({properties, params} = this.checkArgs(properties, params, {parse: true, high: true}))
         return await this.scanItems(properties, params)
     }
 
     async update(properties, params = {}) {
-        /* eslint-disable-next-line */
         ;({properties, params} = this.checkArgs(properties, params, {exists: true, parse: true, high: true}))
         if (this.hasUniqueFields) {
             let hasUniqueProperties = Object.entries(properties).find((pair) => {
@@ -806,7 +844,7 @@ export class Model {
     }
 
     /*
-        Update an item with unique attributes and actually updating a unique property.
+        Update an item with unique attributes.
         Use a transaction to update a unique item for each unique attribute.
      */
     async updateUnique(properties, params) {
@@ -825,7 +863,6 @@ export class Model {
         if (index.sort) {
             keys[index.sort] = properties[index.sort]
         }
-
         /*
             Get the prior item so we know the previous unique property values so they can be removed.
             This must be run here, even if part of a transaction.
@@ -842,6 +879,7 @@ export class Model {
         let fields = Object.values(this.block.fields).filter(
             (f) => f.unique && f.attribute != hash && f.attribute != sort
         )
+        let ttlField = fields.find(f => f.ttl)
 
         for (let field of fields) {
             let toBeRemoved = params.remove && params.remove.includes(field.name)
@@ -849,10 +887,17 @@ export class Model {
             if (isUnchanged) {
                 continue
             }
-
             let scope = ''
             if (field.scope) {
                 scope = this.runTemplate(null, null, field, properties, params, field.scope) + '#'
+                if (scope == undefined) {
+                    throw new OneTableError('Missing properties to resolve unique scope', {
+                        properties,
+                        field,
+                        scope: field.scope,
+                        code: 'UniqueError',
+                    })
+                }
             }
             let pk = `_unique#${scope}${this.name}#${field.attribute}#${properties[field.name]}`
             let sk = `_unique#`
@@ -878,8 +923,16 @@ export class Model {
             }
             // If value is changing, add new unique value
             if (properties[field.name] !== undefined) {
+                let uproperties = {[this.hash]: pk, [this.sort]: sk}
+                if (ttlField) {
+                    /*
+                        Add a TTL expiry property to the unique record
+                     */
+                    let value = properties[ttlField.name]
+                    uproperties[ttlField.name] = new Date(new Date(value).getTime() * 1000)
+                }
                 await this.schema.uniqueModel.create(
-                    {[this.hash]: pk, [this.sort]: sk},
+                    uproperties,
                     {
                         transaction,
                         exists: false,
@@ -926,7 +979,7 @@ export class Model {
                 execute: params.execute,
             })
         }
-        if (this.table.warn !== false) {
+        if (this.table.warn) {
             console.warn(
                 `Update with unique items uses transactions and cannot return the updated item.` +
                     `Use params {return: 'none'} to squelch this warning. ` +
@@ -939,7 +992,6 @@ export class Model {
 
     /* private */
     async deleteItem(properties, params = {}) {
-        /* eslint-disable-next-line */
         ;({properties, params} = this.checkArgs(properties, params))
         if (!params.prepared) {
             properties = this.prepareProperties('delete', properties, params)
@@ -950,7 +1002,6 @@ export class Model {
 
     /* private */
     async getItem(properties, params = {}) {
-        /* eslint-disable-next-line */
         ;({properties, params} = this.checkArgs(properties, params))
         properties = this.prepareProperties('get', properties, params)
         let expression = new Expression(this, 'get', properties, params)
@@ -959,7 +1010,6 @@ export class Model {
 
     /* private */
     initItem(properties, params = {}) {
-        /* eslint-disable-next-line */
         ;({properties, params} = this.checkArgs(properties, params))
         let fields = this.block.fields
         this.setDefaults('init', fields, properties, params)
@@ -975,7 +1025,6 @@ export class Model {
 
     /* private */
     async putItem(properties, params = {}) {
-        /* eslint-disable-next-line */
         ;({properties, params} = this.checkArgs(properties, params))
         if (!params.prepared) {
             if (params.timestamps !== false) {
@@ -998,7 +1047,6 @@ export class Model {
 
     /* private */
     async queryItems(properties = {}, params = {}) {
-        /* eslint-disable-next-line */
         ;({properties, params} = this.checkArgs(properties, params))
         properties = this.prepareProperties('find', properties, params)
         let expression = new Expression(this, 'find', properties, params)
@@ -1008,7 +1056,6 @@ export class Model {
     //  Note: scanItems will return all model types
     /* private */
     async scanItems(properties = {}, params = {}) {
-        /* eslint-disable-next-line */
         ;({properties, params} = this.checkArgs(properties, params))
         properties = this.prepareProperties('scan', properties, params)
         let expression = new Expression(this, 'scan', properties, params)
@@ -1017,7 +1064,6 @@ export class Model {
 
     /* private */
     async updateItem(properties, params = {}) {
-        /* eslint-disable-next-line */
         ;({properties, params} = this.checkArgs(properties, params))
         if (this.timestamps === true || this.timestamps == 'update') {
             if (params.timestamps !== false) {
@@ -1025,7 +1071,7 @@ export class Model {
                     ? (params.transaction.timestamp = params.transaction.timestamp || new Date())
                     : new Date()
                 properties[this.updatedField] = timestamp
-                if (params.exists == null) {
+                if (params.exists == null && (this.timestamps === true || this.timestamps == 'create')) {
                     let field = this.block.fields[this.createdField] || this.table
                     let when = field.isoDates ? timestamp.toISOString() : timestamp.getTime()
                     params.set = params.set || {}
@@ -1040,7 +1086,6 @@ export class Model {
 
     /* private */
     async fetch(models, properties = {}, params = {}) {
-        /* eslint-disable-next-line */
         ;({properties, params} = this.checkArgs(properties, params))
         if (models.length == 0) {
             return {}
@@ -1064,14 +1109,14 @@ export class Model {
     /*
         Map Dynamo types to Javascript types after reading data
      */
-    transformReadItem(op, raw, properties, params) {
+    transformReadItem(op, raw, properties, params, expression) {
         if (!raw) {
             return raw
         }
-        return this.transformReadBlock(op, raw, properties, params, this.block.fields)
+        return this.transformReadBlock(op, raw, properties, params, this.block.fields, expression)
     }
 
-    transformReadBlock(op, raw, properties, params, fields) {
+    transformReadBlock(op, raw, properties, params, fields, expression) {
         let rec = {}
         for (let [name, field] of Object.entries(fields)) {
             //  Skip hidden params. Follow needs hidden params to do the follow.
@@ -1084,7 +1129,6 @@ export class Model {
             if (op == 'put') {
                 att = field.name
             } else {
-                /* eslint-disable-next-line */
                 ;[att, sub] = field.attribute
             }
             let value = raw[att]
@@ -1093,26 +1137,29 @@ export class Model {
                     let [att, sep, index] = field.encode
                     value = (raw[att] || '').split(sep)[index]
                 }
-                if (value === undefined) {
-                    continue
-                }
             }
-            if (sub) {
+            if (sub && value) {
                 value = value[sub]
             }
             if (field.crypt && params.decrypt !== false) {
                 value = this.decrypt(value)
             }
             if (field.default !== undefined && value === undefined) {
-                value = field.default
+                if (!params.fields || params.fields.indexOf(name) >= 0) {
+                    rec[name] = field.default
+                }
             } else if (value === undefined) {
                 if (field.required) {
-                    this.table.log.error(`Required field "${name}" in model "${this.name}" not defined in table item`, {
-                        model: this.name,
-                        raw,
-                        params,
-                        field,
-                    })
+                    /*
+                        Transactions transform the properties to return something, but
+                        does not have all the properties and required fields may be missing).
+                        Also find operation with fields selections may not include required fields.
+                     */
+                    if (!params.transaction && !params.batch && !params.fields && !field.encode && !expression?.index?.project) {
+                        if (params.warn || this.table.warn) {
+                            this.table.log.error(`Required field "${name}" in model "${this.name}" not defined in table item`, {model: this.name, raw, params, field})
+                        }
+                    }
                 }
             } else if (field.schema && value !== null && typeof value == 'object') {
                 if (field.items && Array.isArray(value)) {
@@ -1124,7 +1171,8 @@ export class Model {
                             rvalue,
                             properties[name] || [],
                             params,
-                            field.block.fields
+                            field.block.fields,
+                            expression
                         )
                         i++
                     }
@@ -1134,7 +1182,8 @@ export class Model {
                         raw[att],
                         properties[name] || {},
                         params,
-                        field.block.fields
+                        field.block.fields,
+                        expression
                     )
                 }
             } else {
@@ -1207,7 +1256,7 @@ export class Model {
         }
         if (op != 'scan' && this.getHash(rec, this.block.fields, index, params) == null) {
             this.table.log.error(`Empty hash key`, {properties, params, op, rec, index, model: this.name})
-            throw new OneTableError(`Empty hash key. Check hash key and any value template variable references.`, {
+            throw new OneTableError(`Cannot ${op} data for "${this.name}". Missing data index key.`, {
                 properties,
                 rec,
                 code: 'MissingError',
@@ -1224,7 +1273,7 @@ export class Model {
         NOTE: this is prototype code and definitely not perfect! Use at own risk.
      */
     convertFilter(properties, params, index) {
-        let filter = params.filter
+        let filter = params.filter.toString()
         let fields = this.block.fields
         let where
         //  TODO support > >= < <= ..., AND or ...
@@ -1238,11 +1287,10 @@ export class Model {
                 if (field.encode) {
                     properties[name] = value
                 } else {
-                    where = `\${${name}} = {${value}}`
+                    where = `\${${name}} = {"${value}"}`
                 }
             } else {
-                //  TODO support > >= < <= ..., AND or ...
-                where = `\${${name}} = "{${value}}"`
+                where = `\${${name}} = {"${value}"}`
             }
         } else {
             value = name
@@ -1256,17 +1304,16 @@ export class Model {
                     continue
                 }
                 name = field.map ? field.map : name
-                //  Does not seem to work with a numeric filter
-                let term = `(contains(\${${name}}, {${filter}}))`
-                where.push(term)
+                where.push(`(contains(\${${name}}, {"${filter}"}))`)
             }
             if (where) {
                 where = where.join(' or ')
             }
         }
         params.where = where
-        //  TODO SANITY
-        params.maxPages = 25
+        params.maxPages = params.maxPages || 25
+        //  Remove limit otherwise the search will only search "limit" items at a time
+        delete params.limit
     }
 
     //  Handle fallback for get/delete as GSIs only support find and scan
@@ -1388,7 +1435,7 @@ export class Model {
     */
     tunnelProperties(properties, params) {
         if (params.tunnel) {
-            if (this.table.warn !== false) {
+            if (this.table.warn) {
                 console.warn(
                     'WARNING: tunnel properties should not be required for typescript and will be removed soon.'
                 )
@@ -1410,6 +1457,12 @@ export class Model {
             NOTE: Value templates for unique items may need other properties when removing unique items
         */
         for (let [name, field] of Object.entries(block.fields)) {
+            if (field.fixed && op == 'update' && params.exists !== true) {
+                if (field.fixed && params.fixed !== true) {
+                    this.table.log.info(`Skipping fixed field ${this.name}.${name} for update`)
+                    continue
+                }
+            }
             if (field.schema) continue
             let omit = false
 
@@ -1536,6 +1589,8 @@ export class Model {
                     let generate = field.generate
                     if (generate === true) {
                         value = this.table.generate()
+                    } else if (typeof generate === 'function') {
+                        value = generate()
                     } else if (generate == 'uuid') {
                         value = this.table.uuid()
                     } else if (generate == 'ulid') {
@@ -1577,7 +1632,7 @@ export class Model {
                 delete properties[name]
                 if (this.getPartial(field, params) === false && pathname.match(/[[.]/)) {
                     /*
-                        Partial disabled for a nested object 
+                        Partial disabled for a nested object
                         Don't create remove entry as the entire object is being created/updated
                      */
                     continue
@@ -1590,8 +1645,10 @@ export class Model {
                 let path = pathname ? `${pathname}.${field.name}` : field.name
                 params.remove.push(path)
             } else if (typeof value == 'object' && (field.type == 'object' || field.type == 'array')) {
-                //  Remove nested empty strings because DynamoDB cannot handle these nested in objects or arrays
-                properties[name] = this.handleEmpties(field, value)
+                //  LEGACY: Remove nested empty strings because DynamoDB cannot handle these nested in objects or arrays
+                if (this.table.params.legacyEmpties === true) {
+                    properties[name] = this.handleEmpties(field, value)
+                }
             }
         }
     }
@@ -1663,13 +1720,15 @@ export class Model {
             Consider unresolved template variables. If field is the sort key and doing find,
             then use sort key prefix and begins_with, (provide no where clause).
          */
-        if (value.indexOf('${') >= 0 && index) {
-            if (field.attribute[0] == index.sort) {
-                if (op == 'find') {
-                    //  Strip from first ${ onward and retain fixed prefix portion
-                    value = value.replace(/\${.*/g, '')
-                    if (value) {
-                        return {begins: value}
+        if (value.indexOf('${') >= 0) {
+            if (index) {
+                if (field.attribute[0] == index.sort) {
+                    if (op == 'find') {
+                        //  Strip from first ${ onward and retain fixed prefix portion
+                        value = value.replace(/\${.*/g, '')
+                        if (value) {
+                            return {begins: value}
+                        }
                     }
                 }
             }
@@ -2000,15 +2059,16 @@ export class Model {
         return result
     }
 
+    /*
+        Return if a field supports partial updates of its children.
+        Only relevant for fields with nested schema
+     */
     getPartial(field, params) {
         let partial = params.partial
         if (partial === undefined) {
             partial = field.partial
-            if (partial == undefined) {
-                partial = this.table.partial
-            }
         }
-        return partial
+        return partial ? true : false
     }
 
     /*  KEEP

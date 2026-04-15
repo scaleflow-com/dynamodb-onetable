@@ -1,16 +1,10 @@
 /*
-    debug.ts - Just for debug
-
-    Edit your test case here and invoke via: "jest debug"
-
-    Or run VS Code in the top level directory and just run.
+    basic.ts - Basic create / get
  */
-import {AWS, Client, Entity, Match, Model, Table, print, dump, delay} from './utils/init'
-import {OneSchema} from '../src/index.js'
+import {AWS, Client, Table, print, dump} from './utils/init'
 
-jest.setTimeout(7200 * 1000)
+// jest.setTimeout(7200 * 1000)
 
-//  Change with your schema
 const schema = {
     version: '0.0.1',
     indexes: {
@@ -22,23 +16,21 @@ const schema = {
         updatedField: 'updatedAt',
         isoDates: true,
         timestamps: true,
-        separator: '#',
-        warn: false,
     },
     models: {
         User: {
-            pk: { type: String, value: 'user#' },
-            sk: { type: String, value: 'user#${email}' },
+            pk: { type: String, value: '${_type}#${email}' },
+            sk: { type: String, value: '${_type}#' },
             email: { type: String, required: true },
+            balance: { type: Number, default: 0},
         }
     } as const,
 }
 
-//  Change your table params as required
 const table = new Table({
-    name: 'DebugTable',
+    name: 'BasicTable',
     client: Client,
-    partial: false,
+    partial: true,
     schema,
     logger: true,
 })
@@ -52,16 +44,17 @@ test('Create Table', async () => {
 })
 
 test('Test', async () => {
-    /*
-        Put your code here
-
     let User = table.getModel('User')
     let user = await User.create({
         email: "user@example.com",
     })
-    dump("USER", user)
-    let result = await User.find({}, {log: true})
-    */
+    expect(user).toBeDefined()
+    expect(user.email).toBe('user@example.com')
+    
+    user = await User.update({email: user.email}, {set: {balance: '${balance} + {10.55}'}})
+
+    let users = await User.find({email: user.email})
+    expect(users.length).toBe(1)
 })
 
 test('Destroy Table', async () => {

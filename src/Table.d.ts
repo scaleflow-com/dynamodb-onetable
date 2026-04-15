@@ -13,8 +13,8 @@ import {
     OneSchema,
     Paged,
     Entity,
-} from './Model'
-import { Metrics } from './Metrics'
+} from './Model.js'
+import {Metrics} from './Metrics.js'
 import {DynamoDBRecord} from 'aws-lambda'
 
 export type EntityGroup = {
@@ -37,7 +37,7 @@ type TableConstructorParams<Schema extends OneSchema> = {
     logger?: boolean | ((tag: string, message: string, context: {}) => void) // Logging callback
     //  Intercept table reads and writes
     intercept?: (model: AnyModel, op: string, rec: {}, params: OneParams, raw?: {}) => void
-    metrics?: boolean | object //  Enable CloudWatch metrics.
+    metrics?: boolean | object //  Enable metrics.
     name?: string //  Table name.
     schema?: Schema //  Table models schema.
     senselogs?: {} //  SenseLogs instance for logging
@@ -58,7 +58,7 @@ type TableConstructorParams<Schema extends OneSchema> = {
     // https://www.npmjs.com/package/dataloader DataLoader constructor
     dataloader?: new (batchLoadFn: any, options?: any) => any
 
-    partial?: boolean //  Allow partial updates of nested schemas. Default false.
+    partial?: boolean //  Allow partial updates of nested schemas. Default true.
     warn?: boolean //  Issue warnings
     hidden?: boolean //  Hide key and value template attributes in Javascript properties. Default true.
 
@@ -85,7 +85,8 @@ export class Table<Schema extends OneSchema = any> {
     addContext(context?: {}): Table<Schema>
     addModel(name: string, fields: OneModel): void
 
-    batchGet(batch: any, params?: OneParams): Promise<{}[]>
+    batchGet<T = {}>(batch: any, params?: OneParams): Promise<T[]>
+    // batchGet(batch: any, params?: OneParams): Promise<{}[]>
     batchWrite(batch: any, params?: OneParams): Promise<{}>
     clearContext(): Table<Schema>
     getTableDefinition(params?: {}): {}
@@ -93,6 +94,7 @@ export class Table<Schema extends OneSchema = any> {
     deleteTable(confirmation: string): Promise<{}>
     describeTable(): Promise<{}>
     exists(): Promise<Boolean>
+    flushMetrics(): Promise<void>
     getContext(): {}
     generate(): string
     getLog(): any
@@ -101,7 +103,12 @@ export class Table<Schema extends OneSchema = any> {
         name: T extends ModelNames<Schema> ? T : ModelNames<Schema>,
         options?: {nothrow?: boolean}
     ): T extends string ? Model<Entity<Schema['models'][T]>> : Model<Entity<ExtractModel<T>>>
-    getCurrentSchema(): {}
+
+    /* Proposed
+        getModel<T extends ModelNames<Schema>>(name: T, options?: {nothrow?: boolean}): Model<Entity<Schema['models'][T]>>
+    */
+
+    getCurrentSchema(): OneSchema | null
     groupByType(items: AnyEntity[], params?: OneParams): EntityGroup
     listModels(): AnyModel[]
     listTables(): string[]
@@ -146,4 +153,6 @@ export class Table<Schema extends OneSchema = any> {
     marshall(item: AnyEntity | AnyEntity[], params?: OneParams): AnyEntity
     unmarshall(item: AnyEntity | AnyEntity[], params?: OneParams): AnyEntity
     stream(records: DynamoDBRecord[], params?: OneParams): StreamEntityGroup
+
+    static terminate(): Promise<void>
 }

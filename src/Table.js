@@ -4,11 +4,10 @@
     A OneTable Table represents a single (connected) DynamoDB table
  */
 
+import process from 'process'
 import {Buffer} from 'buffer'
 import Crypto from 'crypto'
-import UUID from './UUID.js'
-import ULID from './ULID.js'
-import UID from './UID.js'
+import {UID, ULID, UUID} from './UID.js'
 import Dynamo from './Dynamo.js'
 import {Expression} from './Expression.js'
 import {Schema} from './Schema.js'
@@ -54,9 +53,25 @@ const DynamoOps = {
     transactWrite: 'transactWrite',
 }
 
+/*
+    The generic model is used for the low-level API and batch operations
+ */
 const GenericModel = '_Generic'
 
 const maxBatchSize = 25
+
+/*
+    On exit, flush buffered metrics. This requires any Lambda layer to receive this signal.
+    Without lambda layers, users can call flushMetrics() from time to time.
+ */
+process.on(
+    'SIGTERM',
+    /* istanbul ignore next */
+    async () => {
+        /* istanbul ignore next */
+        await Table.terminate()
+    }
+)
 
 /*
     Represent a single DynamoDB table
@@ -76,12 +91,6 @@ export class Table {
         }
         if (params.crypto) {
             this.initCrypto(params.crypto)
-            this.crypto = Object.assign(params.crypto)
-            for (let [name, crypto] of Object.entries(this.crypto)) {
-                crypto.secret = Crypto.createHash('sha256').update(crypto.password, 'utf8').digest()
-                this.crypto[name] = crypto
-                this.crypto[name].name = name
-            }
         }
         this.setParams(params)
 
@@ -90,10 +99,16 @@ export class Table {
         this.createdField = 'created'
         this.isoDates = false
         this.nulls = false
+        this.separator = '#'
         this.timestamps = false
         this.updatedField = 'updated'
+        this.warn = false
 
         this.schema = new Schema(this, params.schema)
+
+        if (params.metrics) {
+            this.metrics = new Metrics(this, params.metrics)
+        }
         if (params.dataloader) {
             this.dataloader = new params.dataloader((cmds) => this.batchLoaderFunction(cmds), {maxBatchSize})
         }
@@ -114,6 +129,7 @@ export class Table {
             params.createdField != null ||
             this.isoDates != null ||
             this.nulls != null ||
+            this.separator != null ||
             this.timestamps != null ||
             this.typeField != null ||
             this.updatedField != null
@@ -134,16 +150,14 @@ export class Table {
         if (params.partial == null) {
             console.warn(
                 'OneTable: Must set Table constructor "partial" param to true or false. ' +
-                    'This param permits updating partial nested schemas. Currently defaults to false, ' +
-                    'but in a future version will default to true. ' +
-                    'Set to false to future proof or set to true for the new behavior.'
+                    'This param permits updating partial nested schemas. Defaults to true.'
             )
             params.partial = true
         }
         //  Return hidden fields by default. Default is false.
         this.hidden = params.hidden != null ? params.hidden : false
         this.partial = params.partial
-        this.warn = params.warn || true
+        this.warn = params.warn || false
 
         if (typeof params.generate == 'function') {
             this.generate = params.generate || this.uuid
@@ -153,9 +167,6 @@ export class Table {
 
         this.name = params.name
 
-        if (params.metrics) {
-            this.metrics = new Metrics(this, params.metrics, this.metrics)
-        }
         if (params.monitor) {
             this.monitor = params.monitor
         }
@@ -166,12 +177,14 @@ export class Table {
         this.createdField = params.createdField || 'created'
         this.isoDates = params.isoDates || false
         this.nulls = params.nulls || false
+        this.separator = params.separator != null ? params.separator : '#'
         this.timestamps = params.timestamps != null ? params.timestamps : false
         this.typeField = params.typeField || '_type'
         this.updatedField = params.updatedField || 'updated'
+        this.warn = params.warn || false
 
         if (params.hidden != null) {
-            console.warn(`Schema hidden params should be specified via the Table constructor params`)
+            this.log.warn(`Schema hidden params should be specified via the Table constructor params`, {'@stack': true})
         }
     }
 
@@ -180,6 +193,7 @@ export class Table {
             createdField: this.createdField,
             isoDates: this.isoDates,
             nulls: this.nulls,
+            separator: this.separator,
             timestamps: this.timestamps,
             typeField: this.typeField,
             updatedField: this.updatedField,
@@ -523,6 +537,9 @@ export class Table {
 
     setLog(log) {
         this.log = log
+        if (this.metrics) {
+            this.metrics.setLog(log)
+        }
     }
 
     /*
@@ -669,7 +686,7 @@ export class Table {
         } finally {
             if (result) {
                 if (this.metrics) {
-                    this.metrics.add(model, op, result, params, mark)
+                    await this.metrics.add(model, op, result, params, mark)
                 }
                 if (this.monitor) {
                     await this.monitor(model, op, result, params, mark)
@@ -703,8 +720,6 @@ export class Table {
             def.ExpressionAttributeNames = cmd.ExpressionAttributeNames
         }
         def.ConsistentRead = params.consistent ? true : false
-
-        // let result = await this.execute(GenericModel, 'batchGet', batch, {}, params)
 
         let result,
             retries = 0,
@@ -1224,6 +1239,14 @@ export class Table {
         return new Promise(function (resolve) {
             setTimeout(() => resolve(true), time)
         })
+    }
+
+    async flushMetrics() {
+        await this.metrics.flush()
+    }
+
+    static async terminate() {
+        await Metrics.terminate()
     }
 }
 

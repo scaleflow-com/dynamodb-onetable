@@ -1,7 +1,7 @@
 /*
     crud.ts - Basic create, read, update delete
  */
-import {AWS, Client, Match, Table, print, dump, delay} from './utils/init'
+import {Client, Match, Table, print, dump} from './utils/init'
 import {DefaultSchema} from './schemas'
 
 // jest.setTimeout(7200 * 1000)
@@ -108,6 +108,19 @@ test('Get including hidden', async () => {
     expect(user.pk).toMatch(/^User#/)
 })
 
+test('Get with fields', async () => {
+    // Fetch a reserved keyword (name), a regular keyword (status) and an unknown keyword.
+    // We must also fetch "id" because the next test depends on it being present.
+    user = await User.get({id: user.id}, {fields: ['status', 'name', 'unknown', 'id']})
+    expect(user).toMatchObject({
+        status: 'active',
+        name: 'Peter Smith',
+    })
+    expect(user.id).toMatch(Match.ulid)
+    expect(user.unknown).toBeUndefined()
+    expect(user.age).toBeUndefined()
+})
+
 test('Find by ID', async () => {
     users = await User.find({id: user.id})
     expect(users.length).toBe(1)
@@ -116,6 +129,18 @@ test('Find by ID', async () => {
         name: 'Peter Smith',
         status: 'active',
     })
+})
+
+test('Find by ID with fields', async () => {
+    users = await User.find({id: user.id}, {fields: ['status', 'name', 'unknown']})
+    expect(users.length).toBe(1)
+    user = users[0]
+    expect(user).toMatchObject({
+        name: 'Peter Smith',
+        status: 'active',
+    })
+    expect(user.unknown).toBeUndefined()
+    expect(user.age).toBeUndefined()
 })
 
 test('Find by name on GSI', async () => {
@@ -142,9 +167,9 @@ test('Update', async () => {
 })
 
 test('Remove attribute', async () => {
-    //  Remove attribute by setting to null
+    //  Remove attribute by setting to null -- but status has a default value
     user = await User.update({id: user.id, status: null})
-    expect(user.status).toBeUndefined()
+    expect(user.status).toBe('idle')
 })
 
 test('Remove attribute 2', async () => {

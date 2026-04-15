@@ -2,6 +2,12 @@
     Schema to test items property for array type
  */
 
+export enum ColorEnum {
+    red = 'red',
+    white = 'white',
+    blue = 'blue'
+}
+
 export default {
     version: '0.0.1',
     format: 'onetable:1.1.0',
@@ -21,11 +27,17 @@ export default {
                     type: Object,
                     schema: {
                         foo: {type: String},
-                        bar: {type: String /* required: true */},
+                        bar: {type: String},
                         when: {type: Date},
                     },
                 },
-                // required: true,
+            },
+            arrayWithEnumItems: {
+                type: Array,
+                items: {
+                    type: String,
+                    enum: Object.values(ColorEnum),
+                },
             },
             arrayWithoutTypedItems: {type: Array, required: true},
         },
